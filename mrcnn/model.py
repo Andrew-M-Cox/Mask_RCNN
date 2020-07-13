@@ -2106,6 +2106,7 @@ class MaskRCNN():
         except ImportError:
             # Keras before 2.2 used the 'topology' namespace.
             from keras.engine import topology as saving
+            # from keras.models import load_model is another alternate
 
         if exclude:
             by_name = True
@@ -2298,8 +2299,9 @@ class MaskRCNN():
             and adds a Gaussian blur with a random sigma in range 0 to 5.
 
                 augmentation = imgaug.augmenters.Sometimes(0.5, [
-                    imgaug.augmenters.Fliplr(0.5),
-                    imgaug.augmenters.GaussianBlur(sigma=(0.0, 5.0))
+                    imgaug.augmenters.flip.Fliplr(0.5),
+                    imgaug.augmenters.flip.Flipup(0.5),
+                    imgaug.augmenters.GaussianBlur(sigma=(0.0, 2.0))
                 ])
 	    custom_callbacks: Optional. Add custom callbacks to be called
 	        with the keras fit_generator method. Must be list of type keras.callbacks.
