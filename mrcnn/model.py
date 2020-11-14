@@ -1068,7 +1068,7 @@ def rpn_bbox_loss_graph(config, target_bbox, rpn_match, rpn_bbox):
                                    config.IMAGES_PER_GPU)
 
     loss = smooth_l1_loss(target_bbox, rpn_bbox)
-    
+      
     loss = K.switch(tf.size(loss) > 0, K.mean(loss), tf.constant(0.0))
     return loss
 
@@ -1703,11 +1703,19 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
                               augmentation=None,
                               use_mini_mask=config.USE_MINI_MASK)
             else:
-                image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
-                    load_image_gt(dataset, config, image_id, augment=augment,
-                                augmentation=augmentation,
-                                use_mini_mask=config.USE_MINI_MASK)
-
+                try:
+                    image, image_meta, gt_class_ids, gt_boxes, gt_masks = \
+                        load_image_gt(dataset, config, image_id, augment=augment,
+                                    augmentation=augmentation,
+                                    use_mini_mask=config.USE_MINI_MASK)
+                except:
+                    # Log it and skip the image
+                    logging.exception("Error processing image {}".format(
+                        dataset.image_info[image_id]))
+                    error_count += 1
+                    if error_count > 1000000000000000000000000:
+                        raise
+                    continue
             # Skip images that have no instances. This can happen in cases
             # where we train on a subset of classes and the image doesn't
             # have any of the classes we care about.
@@ -1809,7 +1817,7 @@ def data_generator(dataset, config, shuffle=True, augment=False, augmentation=No
             logging.exception("Error processing image {}".format(
                 dataset.image_info[image_id]))
             error_count += 1
-            if error_count > 5:
+            if error_count > 1000000000000000000000000:
                 raise
 
 
@@ -2300,7 +2308,7 @@ class MaskRCNN():
 
                 augmentation = imgaug.augmenters.Sometimes(0.5, [
                     imgaug.augmenters.flip.Fliplr(0.5),
-                    imgaug.augmenters.flip.Flipup(0.5),
+                    imgaug.augmenters.flip.Flipud(0.5),
                     imgaug.augmenters.GaussianBlur(sigma=(0.0, 2.0))
                 ])
 	    custom_callbacks: Optional. Add custom callbacks to be called
@@ -2362,6 +2370,7 @@ class MaskRCNN():
             workers = 0
         else:
             workers = multiprocessing.cpu_count()
+            # workers = 0
 
         self.keras_model.fit_generator(
             train_generator,

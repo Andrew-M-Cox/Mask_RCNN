@@ -30,10 +30,13 @@ Usage: import the module (see Jupyter notebooks for examples), or run from
 import os
 import sys
 import json
+import time
 import datetime
 import numpy as np
 import skimage.draw
+import PIL.Image as Image
 
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
 
@@ -87,7 +90,7 @@ class ChromosomeConfig(Config):
 
 class ChromosomeDataset(utils.Dataset):
 
-    def load_chromosome(self, dataset_dir, subset):
+    def load_chromosome(self, dataset_dir, subset, return_coco=False):
         """Load a subset of the Chromosome dataset.
         dataset_dir: Root directory of the dataset.
         subset: Subset to load: train or val
@@ -95,24 +98,24 @@ class ChromosomeDataset(utils.Dataset):
         # Train or validation dataset?
         assert subset in ["train", "val"]
         dataset_dir = os.path.join(dataset_dir, subset)
-
-
         chroms = COCO("{}/chromosome.json".format(dataset_dir))
+        print(chroms)
+        image_dir = "{}/".format(dataset_dir)
 
         # Load class IDs
         class_ids = sorted(chroms.getCatIds())
-
+        print('class IDs {}'.format(class_ids))
         # Add classes. We have only one class to add.
         # self.add_class("chromosome", 1, "chromosome")
 
-        # Grab images 
+        # Grab images
         image_ids = []
         for id in class_ids:
             image_ids.extend(list(chroms.getImgIds(catIds=[id])))
-
+        print(image_ids)
         # Remove duplicates
         image_ids = list(set(image_ids))
-
+        
         # Add classes
         for i in class_ids: 
             self.add_class("chroms", i, chroms.loadCats(i)[0]["name"])
@@ -121,12 +124,14 @@ class ChromosomeDataset(utils.Dataset):
         for i in image_ids:
             self.add_image(
                 "chroms", image_id=i,
-                path=os.path.join(chroms.imgs[i]['file_name']),
+                path=os.path.join(image_dir, chroms.imgs[i]['file_name']),
                 width=chroms.imgs[i]["width"],
                 height=chroms.imgs[i]["height"],
                 annotations=chroms.loadAnns(chroms.getAnnIds(
                     imgIds=[i], catIds=class_ids, iscrowd=None)))
         
+        if return_coco:
+            return chroms
 
         # # Load annotations
         # # VGG Image Annotator (up to version 1.6) saves each image in the form:
@@ -245,6 +250,9 @@ class ChromosomeDataset(utils.Dataset):
         :return: binary mask (numpy 2D array)
         """
         segm = ann['segmentation']
+        # completely_arbitrary = ann['image_id']
+        # completely_arbitrary2 = ann['id']
+        # print('segmentation {}, height {}, width {}, image_id {}, id {})'.format(segm, height, width, completely_arbitrary, completely_arbitrary2))
         if isinstance(segm, list):
             # polygon -- a single object might consist of multiple parts
             # we merge all parts into one mask rle code
@@ -267,7 +275,119 @@ class ChromosomeDataset(utils.Dataset):
         m = maskUtils.decode(rle)
         return m
 
+
+###################################################
+# Evaluation
+###################################################
+
+def build_coco_results(dataset, image_ids, rois, class_ids, scores, masks):
+    """Arrange resutls to match COCO specs in http://cocodataset.org/#format
+    """
+    # If no results, return an empty list
+    if rois is None:
+        return []
+
+    results = []
+    for image_id in image_ids:
+        # Loop through detections
+        for i in range(rois.shape[0]):
+            class_id = class_ids[i]
+            score = scores[i]
+            bbox = np.around(rois[i], 1)
+            mask = masks[:, :, i]
+
+            result = {
+                "image_id": image_id,
+                "category_id": dataset.get_source_class_id(class_id, "chroms"),
+                "bbox": [bbox[1], bbox[0], bbox[3] - bbox[1], bbox[2] - bbox[0]],
+                "score": score,
+                "segmentation": maskUtils.encode(np.asfortranarray(mask))
+            }
+            results.append(result)
+    return results
+
+
+def evaluate_coco(model, dataset, coco, eval_type="bbox", limit=0, image_ids=None):
+    """Runs official COCO evaluation.
+    dataset: A Dataset object with valiadtion data
+    eval_type: "bbox" or "segm" for bounding box or segmentation evaluation
+    limit: if not 0, it's the number of images to use for evaluation
+    """
+    # Pick COCO images from the dataset
+    image_ids = image_ids or dataset.image_ids
+
+    # Limit to a subset
+    if limit:
+        image_ids = image_ids[:limit]
+
+    # Get corresponding COCO image IDs.
+    coco_image_ids = [dataset.image_info[id]["id"] for id in image_ids]
+
+    t_prediction = 0
+    t_start = time.time()
+
+    results = []
+    for i, image_id in enumerate(image_ids):
+        # Load image
+        image = dataset.load_image(image_id)
+
+        # Run detection
+        t = time.time()
+        r = model.detect([image], verbose=0)[0]
+        t_prediction += (time.time() - t)
+
+        # Convert results to COCO format
+        # Cast masks to uint8 because COCO tools errors out on bool
+        image_results = build_coco_results(dataset, coco_image_ids[i:i + 1],
+                                           r["rois"], r["class_ids"],
+                                           r["scores"],
+                                           r["masks"].astype(np.uint8))
+        results.extend(image_results)
+
+    # Load results. This modifies results with additional attributes.
+    coco_results = coco.loadRes(results)
+
+    # Evaluate
+    cocoEval = COCOeval(coco, coco_results, eval_type)
+    cocoEval.params.imgIds = coco_image_ids
+    cocoEval.evaluate()
+    cocoEval.accumulate()
+    cocoEval.summarize()
+
+
+###################################################
+# Training
+###################################################
 def train(model):
+    # """Train the model."""
+
+    # import imgaug # for augmentation
+
+    # # Training dataset.
+    # dataset_train = ChromosomeDataset()
+    # dataset_train.load_chromosome(args.dataset, "train")
+    # dataset_train.prepare()
+
+    # # Validation dataset
+    # dataset_val = ChromosomeDataset()
+    # dataset_val.load_chromosome(args.dataset, "val")
+    # dataset_val.prepare()
+
+    # # *** This training schedule is an example. Update to your needs ***
+    # # Since we're using a very small dataset, and starting from
+    # # COCO trained weights, we don't need to train too long. Also,
+    # # no need to train all layers, just the heads should do it.
+    # print("Training network heads")
+    # model.train(dataset_train, dataset_val,
+    #             learning_rate=config.LEARNING_RATE,
+    #             epochs=50,
+    #             augmentation = imgaug.augmenters.Sometimes(0.5, [
+    #                 imgaug.augmenters.flip.Fliplr(0.5)
+    #                 # imgaug.augmenters.flip.Flipud(0.5),
+    #                 #imgaug.augmenters.GaussianBlur(sigma=(0.0, 2.0))
+    #             ]),
+    #             layers="3+")
+
     """Train the model."""
     # Training dataset.
     dataset_train = ChromosomeDataset()
@@ -284,16 +404,11 @@ def train(model):
     # COCO trained weights, we don't need to train too long. Also,
     # no need to train all layers, just the heads should do it.
     print("Training network heads")
+    # print("Training all network layers")
     model.train(dataset_train, dataset_val,
-                learning_rate=config.LEARNING_RATE,
-                epochs=50,
-                augmentation = imgaug.augmenters.Sometimes(0.5, [
-                    imgaug.augmenters.flip.Fliplr(0.5),
-                    imgaug.augmenters.flip.Flipup(0.5),
-                    imgaug.augmenters.GaussianBlur(sigma=(0.0, 2.0))
-                ]),
+                learning_rate=config.LEARNING_RATE ,
+                epochs=20,
                 layers='heads')
-
 
 def color_splash(image, mask):
     """Apply color splash effect.
@@ -323,7 +438,7 @@ def detect_and_color_splash(model, image_path=None, video_path=None):
         # Run model detection and generate the color splash effect
         print("Running on {}".format(args.image))
         # Read image
-        image = skimage.io.imread(args.image)
+        image = skimage.io.imread(args.image, plugin = 'pil')
         # Detect objects
         r = model.detect([image], verbose=1)[0]
         # Color splash
@@ -396,14 +511,56 @@ if __name__ == '__main__':
     parser.add_argument('--video', required=False,
                         metavar="path or URL to video",
                         help='Video to apply the color splash effect on')
+    parser.add_argument('--limit', required=False, 
+                        default=50, 
+                        metavar="<image count>", 
+                        help="Images to use for evaluation (default=50)")
     args = parser.parse_args()
 
     # Validate arguments
     if args.command == "train":
         assert args.dataset, "Argument --dataset is required for training"
+
     elif args.command == "splash":
         assert args.image or args.video,\
                "Provide --image or --video to apply color splash"
+
+    elif args.command == 'evaluate':
+        # Configurations
+        class InferenceConfig(ChromosomeConfig):
+            # Set batch size to 1 since we'll be running inference on 
+            # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
+            GPU_COUNT = 1
+            IMAGES_PER_GPU = 1
+            DETECTION_MIN_CONFIDENCE = 0
+        config = InferenceConfig()
+        config.display()
+        
+        # Create model
+        model = modellib.MaskRCNN(mode='inference', config=config, 
+                                  model_dir=args.logs)
+
+        # Select weights file to load
+        if args.weights.lower() == "coco":
+            model_path = COCO_MODEL_PATH
+        elif args.weights.lower() == "last":
+            # Find last trained weights
+            model_path = model.find_last()
+        elif args.weights.lower() == "imagenet":
+            # Start from ImageNet trained weights
+            model_path = model.get_imagenet_weights()
+        else:
+            model_path = args.model
+
+        # Load weights
+        print("Loading weights", model_path)
+
+        # Validation dataset
+        dataset_val = ChromosomeDataset()
+        chrom = dataset_val.load_chromosome(args.dataset, "val", return_coco=True)
+        dataset_val.prepare()
+        print("Running COCO evaluation on {} chromosome images.".format(args.limit))
+        evaluate_coco(model, dataset_val, chrom, eval_type='segm', limit=int(args.limit))
 
     print("Weights: ", args.weights)
     print("Dataset: ", args.dataset)

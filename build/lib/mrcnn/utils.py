@@ -355,8 +355,12 @@ class Dataset(object):
     def load_image(self, image_id):
         """Load the specified image and return a [H,W,3] Numpy array.
         """
+        from PIL import Image # resolves tifffile.py:2618: RuntimeWarning: 
+        # py_decodelzw encountered unexpected end of stream along with the 
+        # plugin arg below in imread
+
         # Load image
-        image = skimage.io.imread(self.image_info[image_id]['path'])
+        image = skimage.io.imread(self.image_info[image_id]['path'], plugin='pil')
         # If grayscale. Convert to RGB for consistency.
         if image.ndim != 3:
             image = skimage.color.gray2rgb(image)
